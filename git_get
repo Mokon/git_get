@@ -232,7 +232,7 @@ sub get_stats_per_stat_attrs {
 
     my $sum = reduce { $a + $$b{$stat} } 0, @$commits;
     my $num_commits = reduce { $a + ($$b{$stat} != 0 ? 1 : 0) } 0, @$commits;
-    my $avg = $num_commits != 0 ? sprintf "%.2f", $sum/$num_commits : '-';
+    my $avg = $num_commits != 0 ? sprintf "%.2f", $sum/$num_commits : 0;
     my $sum_per_day = sprintf "%.2f", $sum/$stats->{tenure};
     my $num_commits_per_day = sprintf "%.2f", $num_commits/$stats->{tenure};
 
