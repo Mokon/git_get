@@ -1,0 +1,443 @@
+#!/usr/bin/perl
+# The MIT License (MIT)
+#
+# Copyright (c) 2015 David Bond
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+use strict;
+use warnings;
+
+use List::MoreUtils 'uniq';
+use List::Util 'min', 'max', 'reduce';
+use Data::Dumper;
+use DateTime;
+
+my $indent_char = '    ';
+my $cfg_fn = 'git_get.cfg';
+my @stats = ('file_changes', 'insertions', 'deletions', 'changes');
+my @per_stat_attrs = ('sum', 'avg_per_commit', 'num_commits', 'max_commits',
+                      'min_commits', 'avg_per_day', 'num_commits_per_day');
+my @per_commits_attrs = ('initial_commit', 'final_commit', 'tenure',
+                         'tenure_abs');
+
+sub cfg_check {
+  my ($cfg, $field, $value) = @_;
+  
+  return (defined $cfg->{$field} and $cfg->{$field} eq $value);
+}
+
+sub get_uniq_field_values {
+  my ($commits, $field) = @_;
+
+  my @field_commits = ();
+  foreach my $commit (@$commits) {
+    push @field_commits, $$commit{$field};
+  }
+
+  @field_commits = uniq @field_commits;
+  return \@field_commits;
+}
+
+sub output {
+  my ($text, $indent) = @_;
+
+  print ${indent_char}x$indent.$text."\n";
+}
+
+sub output_stats_per_commits_attrs {
+  my ($stats, $indent) = @_;
+
+  foreach my $attr (@per_commits_attrs) {
+    if (defined $stats->{$attr} and not ref($stats->{$attr})) {
+      output "$attr: $stats->{$attr}", $indent;
+    } elsif (ref($stats->{$attr}) eq 'DateTime') {
+      output "$attr: ".$stats->{$attr}->strftime('%m/%d/%Y'), $indent;
+    }
+  }
+}
+
+sub output_stats_per_stat_attrs {
+  my ($stats, $indent) = @_;
+
+  return if (not defined $stats);
+
+  foreach my $stat (keys $stats) {
+    output $stat, $indent;
+
+    foreach my $attr (@per_stat_attrs) {
+      if (not ref($stats->{$stat}{$attr})) {
+        output "$attr: $stats->{$stat}{$attr}", $indent + 1;
+      } elsif (ref($stats->{$stat}{$attr}) eq 'ARRAY') {
+        output "$attr:", $indent + 1;
+        foreach my $elem (@{$stats->{$stat}{$attr}}) {
+          output "$$elem{label}: $$elem{value} $stat", $indent + 2;
+        }
+      }
+    }
+  }
+}
+
+sub output_stats {
+  my ($stats, $indent) = @_;
+
+  output_stats_per_commits_attrs $stats, $indent;
+  output_stats_per_stat_attrs $stats->{stats}, $indent;
+}
+
+sub output_stats_on_authors {
+  my ($cfg, $results) = @_;
+
+  if (cfg_check $cfg, 'output_stats_on_authors', 'true') {
+    output 'per author stats', 0;  
+    return if (not $results->{authors});
+    
+    foreach my $author (keys $results->{authors}) {
+      output "author $author", 1;
+      output_stats $results->{authors}{$author}, 2;
+    }
+  }
+}
+
+sub output_stats_on_all_commits {
+  my ($cfg, $results) = @_;
+
+  output 'all commits stats', 0;
+  output_stats $results, 1;
+}
+
+sub output_by_attrs_stats_attrs {
+  my ($attr, $authors, $indent) = @_;
+
+  my $text = '';
+  foreach my $author (@$authors) {
+    if (not ref($author->{value})) {
+      $text .= sprintf "%s%-20s %s\n", ${indent_char}x($indent+1),
+                       $author->{author}.':', $author->{value};
+    }
+  }
+
+  if ($text ne '') {
+    output $attr, $indent;
+    print $text;
+  }
+}
+
+sub output_stats_by_attrs {
+  my ($results) = @_;
+
+  output 'stats by attrs', 0;
+
+  foreach my $attr (@per_commits_attrs) {
+    output_by_attrs_stats_attrs $attr, $results->{attrs}{$attr}, 1;
+  }
+
+  foreach my $stat (keys $results->{attrs}{stats}) {
+    output $stat, 1;
+  
+    foreach my $attr (@per_stat_attrs) {
+      output_by_attrs_stats_attrs $attr,
+                                  $results->{attrs}{stats}{$stat}{$attr}, 2;
+    }
+  }
+}
+
+sub output_results_dump {
+  my ($cfg, $results) = @_;
+
+  if (cfg_check $cfg, 'output_results_dump', 'true') {
+    output 'results dump', 0;
+    $Data::Dumper::Pad = $indent_char;
+    print Dumper $results;
+  }
+}
+
+sub output_results {
+  my ($cfg, $results) = @_;
+
+  if (cfg_check $cfg, 'output_results', 'true') {
+    output_stats_on_authors $cfg, $results;
+    output_stats_on_all_commits $cfg, $results;
+    output_stats_by_attrs $results;
+  }
+  output_results_dump $cfg, $results;
+}
+
+sub output_cfg {
+  my ($cfg) = @_;
+
+  if (cfg_check $cfg, 'output_cfg', 'true') {
+    output 'cfg', 0;
+    $Data::Dumper::Pad = $indent_char;
+    output Dumper $cfg;
+  }
+}
+
+sub get_stats_per_commits_attrs {
+  my ($cfg, $commits, $stats) = @_;
+
+  return if (not @$commits);
+
+  my @commits_by_ts = sort { $a->{author_timestamp} <=>
+                             $b->{author_timestamp} } @$commits;
+
+  $stats->{initial_commit} = DateTime->from_epoch(
+    epoch => $commits_by_ts[0]{author_timestamp});
+  $stats->{final_commit} = DateTime->from_epoch(
+      epoch => $commits_by_ts[$#commits_by_ts]{author_timestamp});
+
+  $stats->{tenure_abs} =
+    max(1, $cfg->{now}->delta_days($stats->{initial_commit})->delta_days());
+  $stats->{tenure} =
+    max(1, $stats->{final_commit}->delta_days($stats->{initial_commit})
+      ->delta_days());
+}
+
+sub get_stats_per_stat_attrs {
+  my ($cfg, $commits, $stats) = @_;
+
+  return if (not @$commits);
+
+  $stats->{stats} = {};
+  foreach my $stat (@stats) {
+    my @sorted_stat = sort { $b->{$stat} <=> $a->{$stat} } @$commits;
+
+    my @max_commits = ();
+    foreach my $commit
+        (@sorted_stat[0 .. min($#sorted_stat, $cfg->{num_max_commits}-1)]) {
+      push @max_commits, {label => $$commit{label}, value => $$commit{$stat}};
+    }
+
+    my @min_commits = ();
+    foreach my $commit
+        (@sorted_stat[-min($#sorted_stat, $cfg->{num_min_commits}-1)-1 .. -1]) {
+      push @min_commits, {label => $$commit{label}, value => $$commit{$stat}};
+    }
+
+    my $sum = reduce { $a + $$b{$stat} } 0, @$commits;
+    my $num_commits = reduce { $a + ($$b{$stat} != 0 ? 1 : 0) } 0, @$commits;
+    my $avg = $num_commits != 0 ? sprintf "%.2f", $sum/$num_commits : '-';
+    my $sum_per_day = sprintf "%.2f", $sum/$stats->{tenure};
+    my $num_commits_per_day = sprintf "%.2f", $num_commits/$stats->{tenure};
+
+    my %attrs;
+    @attrs{@per_stat_attrs} = ($sum, $avg, $num_commits, \@max_commits,
+      \@min_commits, $sum_per_day, $num_commits_per_day);
+
+    $stats->{stats}{$stat} = \%attrs;
+  }
+}
+
+sub get_stats {
+  my ($cfg, $commits, $stats) = @_;
+
+  get_stats_per_commits_attrs $cfg, $commits, $stats;
+  get_stats_per_stat_attrs $cfg, $commits, $stats;
+}
+
+sub get_stats_on_authors {
+  my ($cfg, $commits, $results, $authors) = @_;
+
+  foreach my $author (@$authors) {
+    my $author_commits = [grep { $$_{author_name} eq $author } @$commits];
+
+    $results->{authors}{$author} = {};
+    get_stats $cfg, $author_commits, $results->{authors}{$author}
+  }
+}
+
+sub get_by_attrs_stats_per_stat_attrs {
+  my ($commits, $results, $authors) = @_;
+
+  foreach my $stat (@stats) {
+    foreach my $attr (@per_stat_attrs) {
+      $results->{attrs}{stats}{$stat}{$attr} = [];
+      foreach my $author
+          (sort { $results->{authors}{$b}{stats}{$stat}{$attr} <=>
+                  $results->{authors}{$a}{stats}{$stat}{$attr} }
+                    @$authors) {
+        push $results->{attrs}{stats}{$stat}{$attr},
+             { author => $author,
+               value  => $results->{authors}{$author}{stats}{$stat}{$attr}};
+      }
+    }
+  }
+}
+
+sub get_by_attrs_stats_per_commits_attrs {
+  my ($commits, $results, $authors) = @_;
+
+  foreach my $attr (@per_commits_attrs) {
+    $results->{attrs}{$attr} = [];
+    foreach my $author
+        (sort { $results->{authors}{$b}{$attr} <=>
+                $results->{authors}{$a}{$attr} } @$authors) {
+      push $results->{attrs}{$attr},
+           { author => $author,
+             value  => $results->{authors}{$author}{$attr}};
+    }
+  }
+}
+
+sub get_by_attrs_stats {
+  my ($commits, $results, $authors) = @_;
+
+  get_by_attrs_stats_per_stat_attrs $commits, $results, $authors;
+  get_by_attrs_stats_per_commits_attrs $commits, $results, $authors;
+}
+
+sub get_results {
+  my ($cfg, $commits) = @_;
+
+  my $results = {};
+
+  my $authors = get_uniq_field_values $commits, 'author_name';
+  get_stats $cfg, $commits, $results;
+  get_stats_on_authors $cfg, $commits, $results, $authors;
+  get_by_attrs_stats $commits, $results, $authors;
+
+  return $results;
+}
+
+sub get_alias {
+  my ($given, $aliases) = @_;
+
+  if (defined $aliases and defined($aliases->{$given})) {
+    $given = $aliases->{$given};
+  }
+  return $given;
+}
+
+sub finalize_commit {
+  my ($cfg, $commits, $commit) = @_;
+
+  return if (not defined $commit);
+
+  if ((cfg_check $cfg, 'filter_by_hashes', 'false' or
+         not defined $cfg->{filter_hashes} or
+         not defined $cfg->{filter_hashes}->{$$commit{sha1}}) and
+      (cfg_check $cfg, 'filter_empty_merges', 'false' or
+         $$commit{file_changes} != 0) and
+      (cfg_check $cfg, 'filter_by_email_domain', 'false' or
+         (not defined $cfg->{filter_email_domain}) or
+         $cfg->{filter_email_domain} eq '' or
+         $$commit{author_email} =~ /^[^@]+\@$cfg->{filter_email_domain}$/)) {
+    $$commit{changes} = $$commit{insertions} + $$commit{deletions};
+    push @$commits, $commit;
+  }
+}
+
+sub get_repo_commits {
+  my ($cfg, $commits, $repo) = @_;
+
+  my $commit;
+  my @git_log = `git log --format=format:"%H|%an|%ae|%at|" --shortstat`;
+  foreach my $git_line (@git_log) {
+    if ($git_line =~ /^(?<sha1>\b[0-9a-f]{5,40}\b)\|
+                       (?<author_name>.*)\|
+                       (?<author_email>.*)\|
+                       (?<author_timestamp>.*)\|$/gx) {
+      $commit = {};
+      $commit->{sha1} = $+{sha1};
+      $commit->{label} =`git show --pretty=format:'%h by %an' --quiet $+{sha1}`;
+      $commit->{repo} = $repo;
+      $commit->{author_name} = get_alias $+{author_name},
+                                         $cfg->{author_name_aliases};
+      $commit->{author_email} = get_alias $+{author_email},
+                                          $cfg->{email_aliases};
+      $commit->{author_timestamp} = $+{author_timestamp},
+      $commit->{file_changes} = 0;
+      $commit->{insertions} = 0;
+      $commit->{deletions} = 0;
+    } elsif ($git_line =~ /^\ (?<file_changes>\d+)\ file(?:s)?\ changed,
+                          (?:\ (?<insertions>\d+)\ insertion(?:s)?\(\+\))?(?:,)
+                         ?(?:\ (?<deletions>\d+)\ deletion(?:s)?\(-\))?$/gx) {
+      $commit->{file_changes} = $+{file_changes};
+      $commit->{insertions} = defined $+{insertions} ? $+{insertions} : 0;
+      $commit->{deletions} = defined $+{deletions} ? $+{deletions} : 0;
+    } elsif ($git_line =~ /^\n$/g) {
+      finalize_commit $cfg, $commits, $commit;
+    } else {
+      die "commit line error '$git_line'";
+    }
+  }
+
+  finalize_commit $cfg, $commits, $commit;
+}
+
+sub get_commits {
+  my ($cfg) = @_;
+
+  my @git_repos = ();
+  my $commits = [];
+  if (cfg_check $cfg, 'include_submodules', 'true') {
+    push @git_repos, `git submodule -q foreach git rev-parse --show-toplevel`;
+  }
+
+  if (cfg_check $cfg, 'include_root_module', 'true') {
+    push @git_repos, `git rev-parse --show-toplevel`;
+  }
+  chomp @git_repos;
+
+  output 'fetching all commits', 0;
+  foreach my $repo (@git_repos) {
+    output "from repo $repo", 1;
+    chdir $repo or die "Failed to chdir to $repo";
+
+    get_repo_commits $cfg, $commits, $repo;
+  }
+  return $commits;
+}
+
+sub get_cfg {
+  my $cfg = {
+    include_submodules      => 'true',
+    include_root_module     => 'true',
+    output_results          => 'true',
+    output_results_dump     => 'false',
+    output_stats_on_authors => 'true',
+    output_cfg              => 'false',
+    filter_empty_merges     => 'true',
+    filter_by_hashes        => 'true',
+    filter_hashes           => {},
+    filter_by_email_domain  => 'true',
+    filter_email_domain     => undef,
+    author_name_aliases     => {},
+    email_aliases           => {},
+    num_max_commits         => 5,
+    num_min_commits         => 5,
+    now                     => DateTime->from_epoch(epoch => time),
+  };
+
+  if (open CONF, $cfg_fn or open CONF, "$ENV{HOME}/$cfg_fn") {
+    local $/ = undef;
+    eval <CONF>;
+    close CONF;
+  }
+
+  return $cfg;
+}
+
+sub git_get {
+  my $cfg = get_cfg;
+  output_cfg $cfg;
+  output_results $cfg, get_results $cfg, get_commits $cfg;
+}
+
+git_get;
