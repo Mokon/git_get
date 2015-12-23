@@ -31,7 +31,7 @@ use DateTime;
 
 my $indent_char = '    ';
 my $cfg_fn = 'git_get.cfg';
-my @stats = ('file_changes', 'insertions', 'deletions', 'changes');
+my @stats = ('file_changes', 'insertions', 'deletions', 'changes', 'additions');
 my @per_stat_attrs = ('sum', 'avg_per_commit', 'num_commits', 'max_commits',
                       'min_commits', 'avg_per_day', 'num_commits_per_day');
 my @per_commits_attrs = ('initial_commit', 'final_commit', 'tenure',
@@ -339,6 +339,7 @@ sub finalize_commit {
          $cfg->{filter_email_domain} eq '' or
          $$commit{author_email} =~ /^[^@]+\@$cfg->{filter_email_domain}$/)) {
     $$commit{changes} = $$commit{insertions} + $$commit{deletions};
+    $$commit{additions} = $$commit{insertions} - $$commit{deletions};
     push @$commits, $commit;
   }
 }
