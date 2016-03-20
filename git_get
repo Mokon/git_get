@@ -31,11 +31,6 @@ use DateTime;
 
 my $indent_char = '    ';
 my $cfg_fn = 'git_get.cfg';
-my @stats = ('file_changes', 'insertions', 'deletions', 'changes', 'additions');
-my @per_stat_attrs = ('sum', 'avg_per_commit', 'num_commits', 'max_commits',
-                      'min_commits', 'avg_per_day', 'num_commits_per_day');
-my @per_commits_attrs = ('initial_commit', 'final_commit', 'tenure',
-                         'tenure_abs');
 
 sub cfg_check {
   my ($cfg, $field, $value) = @_;
@@ -62,9 +57,9 @@ sub output {
 }
 
 sub output_stats_per_commits_attrs {
-  my ($stats, $indent) = @_;
+  my ($cfg, $stats, $indent) = @_;
 
-  foreach my $attr (@per_commits_attrs) {
+  foreach my $attr (@{$cfg->{per_commits_attrs}}) {
     if (defined $stats->{$attr} and not ref($stats->{$attr})) {
       output "$attr: $stats->{$attr}", $indent;
     } elsif (ref($stats->{$attr}) eq 'DateTime') {
@@ -74,14 +69,14 @@ sub output_stats_per_commits_attrs {
 }
 
 sub output_stats_per_stat_attrs {
-  my ($stats, $indent) = @_;
+  my ($cfg, $stats, $indent) = @_;
 
   return if (not defined $stats);
 
   foreach my $stat (keys $stats) {
     output $stat, $indent;
 
-    foreach my $attr (@per_stat_attrs) {
+    foreach my $attr (@{$cfg->{per_stat_attrs}}) {
       if (not ref($stats->{$stat}{$attr})) {
         output "$attr: $stats->{$stat}{$attr}", $indent + 1;
       } elsif (ref($stats->{$stat}{$attr}) eq 'ARRAY') {
@@ -95,10 +90,10 @@ sub output_stats_per_stat_attrs {
 }
 
 sub output_stats {
-  my ($stats, $indent) = @_;
+  my ($cfg, $stats, $indent) = @_;
 
   output_stats_per_commits_attrs $stats, $indent;
-  output_stats_per_stat_attrs $stats->{stats}, $indent;
+  output_stats_per_stat_attrs $cfg, $stats->{stats}, $indent;
 }
 
 sub output_stats_on_authors {
@@ -110,7 +105,8 @@ sub output_stats_on_authors {
     
     foreach my $author (keys $results->{authors}) {
       output "author $author", 1;
-      output_stats $results->{authors}{$author}, 2;
+      output_stats $cfg, $results->{authors}{$author}, 2;
+
     }
   }
 }
@@ -119,7 +115,7 @@ sub output_stats_on_all_commits {
   my ($cfg, $results) = @_;
 
   output 'all commits stats', 0;
-  output_stats $results, 1;
+  output_stats $cfg, $results, 1;
 }
 
 sub output_by_attrs_stats_attrs {
@@ -140,18 +136,18 @@ sub output_by_attrs_stats_attrs {
 }
 
 sub output_stats_by_attrs {
-  my ($results) = @_;
+  my ($cfg, $results) = @_;
 
   output 'stats by attrs', 0;
 
-  foreach my $attr (@per_commits_attrs) {
+  foreach my $attr (@{$cfg->{per_commits_attrs}}) {
     output_by_attrs_stats_attrs $attr, $results->{attrs}{$attr}, 1;
   }
 
   foreach my $stat (keys $results->{attrs}{stats}) {
     output $stat, 1;
   
-    foreach my $attr (@per_stat_attrs) {
+    foreach my $attr (@{$cfg->{per_stat_attrs}}) {
       output_by_attrs_stats_attrs $attr,
                                   $results->{attrs}{stats}{$stat}{$attr}, 2;
     }
@@ -174,7 +170,7 @@ sub output_results {
   if (cfg_check $cfg, 'output_results', 'true') {
     output_stats_on_authors $cfg, $results;
     output_stats_on_all_commits $cfg, $results;
-    output_stats_by_attrs $results;
+    output_stats_by_attrs $cfg, $results;
   }
   output_results_dump $cfg, $results;
 }
@@ -185,7 +181,8 @@ sub output_cfg {
   if (cfg_check $cfg, 'output_cfg', 'true') {
     output 'cfg', 0;
     $Data::Dumper::Pad = $indent_char;
-    output Dumper $cfg;
+    my $cfg_out = Dumper $cfg;
+    output $cfg_out, 0;
   }
 }
 
@@ -215,9 +212,10 @@ sub get_stats_per_stat_attrs {
   return if (not @$commits);
 
   $stats->{stats} = {};
-  foreach my $stat (@stats) {
+  foreach my $stat (@{$cfg->{stats}}) {
     my @sorted_stat = sort { $b->{$stat} <=> $a->{$stat} } @$commits;
 
+    #  TODO this should really be done via lambas
     my @max_commits = ();
     foreach my $commit
         (@sorted_stat[0 .. min($#sorted_stat, $cfg->{num_max_commits}-1)]) {
@@ -232,13 +230,28 @@ sub get_stats_per_stat_attrs {
 
     my $sum = reduce { $a + $$b{$stat} } 0, @$commits;
     my $num_commits = reduce { $a + ($$b{$stat} != 0 ? 1 : 0) } 0, @$commits;
-    my $avg = $num_commits != 0 ? sprintf "%.2f", $sum/$num_commits : 0;
-    my $sum_per_day = sprintf "%.2f", $sum/$stats->{tenure};
+    my $avg_per_commit = $num_commits != 0 ? sprintf "%.2f", $sum/$num_commits : 0;
+    my $avg_per_day = sprintf "%.2f", $sum/$stats->{tenure};
     my $num_commits_per_day = sprintf "%.2f", $num_commits/$stats->{tenure};
 
     my %attrs;
-    @attrs{@per_stat_attrs} = ($sum, $avg, $num_commits, \@max_commits,
-      \@min_commits, $sum_per_day, $num_commits_per_day);
+    foreach my $attr (@{$cfg->{per_stat_attrs}}) {
+      if ($attr eq 'sum') {
+        $attrs{$attr} = $sum;
+      } elsif ($attr eq 'avg_per_commit') {
+        $attrs{$attr} = $avg_per_commit;
+      } elsif ($attr eq 'num_commits') {
+        $attrs{$attr} = $num_commits;
+      } elsif ($attr eq 'max_commits') {
+        $attrs{$attr} = \@max_commits;
+      } elsif ($attr eq 'min_commits') {
+        $attrs{$attr} = \@min_commits;
+      } elsif ($attr eq 'avg_per_day') {
+        $attrs{$attr} = $avg_per_day;
+      } elsif ($attr eq 'num_commits_per_day') {
+        $attrs{$attr} = $num_commits_per_day;
+      }
+    }
 
     $stats->{stats}{$stat} = \%attrs;
   }
@@ -263,10 +276,10 @@ sub get_stats_on_authors {
 }
 
 sub get_by_attrs_stats_per_stat_attrs {
-  my ($commits, $results, $authors) = @_;
+  my ($cfg, $commits, $results, $authors) = @_;
 
-  foreach my $stat (@stats) {
-    foreach my $attr (@per_stat_attrs) {
+  foreach my $stat (@{$cfg->{stats}}) {
+    foreach my $attr (@{$cfg->{per_stat_attrs}}) {
       $results->{attrs}{stats}{$stat}{$attr} = [];
       foreach my $author
           (sort { $results->{authors}{$b}{stats}{$stat}{$attr} <=>
@@ -281,9 +294,9 @@ sub get_by_attrs_stats_per_stat_attrs {
 }
 
 sub get_by_attrs_stats_per_commits_attrs {
-  my ($commits, $results, $authors) = @_;
+  my ($cfg, $commits, $results, $authors) = @_;
 
-  foreach my $attr (@per_commits_attrs) {
+  foreach my $attr (@{$cfg->{per_commits_attrs}}) {
     $results->{attrs}{$attr} = [];
     foreach my $author
         (sort { $results->{authors}{$b}{$attr} <=>
@@ -296,10 +309,10 @@ sub get_by_attrs_stats_per_commits_attrs {
 }
 
 sub get_by_attrs_stats {
-  my ($commits, $results, $authors) = @_;
+  my ($cfg, $commits, $results, $authors) = @_;
 
-  get_by_attrs_stats_per_stat_attrs $commits, $results, $authors;
-  get_by_attrs_stats_per_commits_attrs $commits, $results, $authors;
+  get_by_attrs_stats_per_stat_attrs $cfg, $commits, $results, $authors;
+  get_by_attrs_stats_per_commits_attrs $cfg, $commits, $results, $authors;
 }
 
 sub get_results {
@@ -310,7 +323,7 @@ sub get_results {
   my $authors = get_uniq_field_values $commits, 'author_name';
   get_stats $cfg, $commits, $results;
   get_stats_on_authors $cfg, $commits, $results, $authors;
-  get_by_attrs_stats $commits, $results, $authors;
+  get_by_attrs_stats $cfg, $commits, $results, $authors;
 
   return $results;
 }
@@ -424,6 +437,13 @@ sub get_cfg {
     num_max_commits         => 5,
     num_min_commits         => 5,
     now                     => DateTime->from_epoch(epoch => time),
+    stats                   => ['file_changes', 'insertions', 'deletions',
+                                'changes', 'additions'],
+    per_stat_attrs          => ['sum', 'avg_per_commit', 'num_commits',
+                                'max_commits', 'min_commits', 'avg_per_day',
+                                'num_commits_per_day'],
+    per_commits_attrs       => ['initial_commit', 'final_commit', 'tenure',
+                                'tenure_abs'],
   };
 
   if (open CONF, $cfg_fn or open CONF, "$ENV{HOME}/$cfg_fn") {
