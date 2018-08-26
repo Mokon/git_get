@@ -73,7 +73,7 @@ sub output_stats_per_stat_attrs {
 
   return if (not defined $stats);
 
-  foreach my $stat (keys $stats) {
+  foreach my $stat (keys %{ $stats } ) {
     output $stat, $indent;
 
     foreach my $attr (@{$cfg->{per_stat_attrs}}) {
@@ -103,7 +103,7 @@ sub output_stats_on_authors {
     output 'per author stats', 0;  
     return if (not $results->{authors});
     
-    foreach my $author (keys $results->{authors}) {
+    foreach my $author (keys %{ $results->{authors} } ) {
       output "author $author", 1;
       output_stats $cfg, $results->{authors}{$author}, 2;
 
@@ -144,7 +144,7 @@ sub output_stats_by_attrs {
     output_by_attrs_stats_attrs $attr, $results->{attrs}{$attr}, 1;
   }
 
-  foreach my $stat (keys $results->{attrs}{stats}) {
+  foreach my $stat (keys %{ $results->{attrs}{stats} } ) {
     output $stat, 1;
   
     foreach my $attr (@{$cfg->{per_stat_attrs}}) {
@@ -285,7 +285,7 @@ sub get_by_attrs_stats_per_stat_attrs {
           (sort { $results->{authors}{$b}{stats}{$stat}{$attr} <=>
                   $results->{authors}{$a}{stats}{$stat}{$attr} }
                     @$authors) {
-        push $results->{attrs}{stats}{$stat}{$attr},
+        push @{ $results->{attrs}{stats}{$stat}{$attr} },
              { author => $author,
                value  => $results->{authors}{$author}{stats}{$stat}{$attr}};
       }
@@ -301,7 +301,7 @@ sub get_by_attrs_stats_per_commits_attrs {
     foreach my $author
         (sort { $results->{authors}{$b}{$attr} <=>
                 $results->{authors}{$a}{$attr} } @$authors) {
-      push $results->{attrs}{$attr},
+      push @{ $results->{attrs}{$attr} },
            { author => $author,
              value  => $results->{authors}{$author}{$attr}};
     }
@@ -361,7 +361,7 @@ sub get_repo_commits {
   my ($cfg, $commits, $repo) = @_;
 
   my $commit;
-  my @git_log = `git log --format=format:"%H|%an|%ae|%at|" --shortstat`;
+  my @git_log = `git log --format=format:"%H|%an|%ae|%at|" --shortstat --no-merges --all`;
   foreach my $git_line (@git_log) {
     if ($git_line =~ /^(?<sha1>\b[0-9a-f]{5,40}\b)\|
                        (?<author_name>.*)\|
